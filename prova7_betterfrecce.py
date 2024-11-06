@@ -5,6 +5,7 @@ from sklearn.cluster import DBSCAN
 from scipy.spatial import KDTree
 from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
+from matplotlib import cm
 
 # ==============================
 # Adjustable Parameters
@@ -125,6 +126,7 @@ def create_arrows_and_spheres(points, normals, step=STEP):
         # Create sphere at arrow tip
         sphere = o3d.geometry.TriangleMesh.create_sphere(radius=SPHERE_RADIUS)
         sphere.paint_uniform_color([1, 0, 0])
+        from matplotlib import cm
         sphere.translate(end)
         geometries.append(sphere)
 
@@ -147,6 +149,46 @@ def visualize_clusters(points, labels, normals):
     o3d.visualization.draw_geometries([pcl] + geometries)
     print("Visualization complete.")
 
+# Visualize point cloud with colors based on curvature and add a legend
+def visualize_curvature_with_legend(points, curvatures, curvature_threshold=0.05):
+    print("Visualizing curvature-based coloring with legend...")
+
+    # Clip and normalize curvature values for better contrast
+    curvatures_clipped = np.clip(curvatures, 0, curvature_threshold)
+    curvatures_normalized = curvatures_clipped / curvature_threshold
+    
+    # Map normalized curvature to colors using 'jet' colormap
+    colormap = cm.get_cmap('jet')
+    colors = colormap(curvatures_normalized)[:, :3]
+
+    # Create a point cloud and assign colors based on curvature
+    pcl = o3d.geometry.PointCloud()
+    pcl.points = o3d.utility.Vector3dVector(points)
+    pcl.colors = o3d.utility.Vector3dVector(colors)
+
+    # Open3D visualization for the point cloud
+    o3d.visualization.draw_geometries([pcl], window_name="Curvature Visualization with Legend")
+
+    # Create a colorbar for the legend using Matplotlib
+    fig, ax = plt.subplots(figsize=(6, 1))
+    fig.subplots_adjust(bottom=0.5)
+
+    # Configure colorbar settings
+    norm = plt.Normalize(vmin=0, vmax=curvature_threshold)
+    cbar = plt.colorbar(cm.ScalarMappable(norm=norm, cmap=colormap), cax=ax, orientation='horizontal')
+    cbar.set_label("Curvature Value")
+    
+    # Display the legend as a separate Matplotlib figure
+    plt.show()
+    print("Curvature visualization with legend complete.")
+
+# Main execution with additional curvature visualization
+file_path = "/home/besughino/Downloads/pointclouds_24.10.21/C4.txt"
+points = load_and_downsample_point_cloud(file_path)
+normals = calculate_normals(points)
+curvatures = calculate_curvature(points, normals)
+labels = cluster_surfaces(points, curvatures)
+
 # Main execution
 file_path = "/home/besughino/Downloads/pointclouds_24.10.21/C4.txt"
 points = load_and_downsample_point_cloud(file_path)
@@ -154,3 +196,5 @@ normals = calculate_normals(points)
 curvatures = calculate_curvature(points, normals)
 labels = cluster_surfaces(points, curvatures)
 visualize_clusters(points, labels, normals)
+# New curvature-based visualization
+visualize_curvature_with_legend(points, curvatures)
