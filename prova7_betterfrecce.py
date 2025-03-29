@@ -6,6 +6,9 @@ from scipy.spatial import KDTree
 from multiprocessing import Pool, cpu_count
 import matplotlib.pyplot as plt
 from matplotlib import cm
+import matplotlib
+
+matplotlib.use('TkAgg')
 
 # ==============================
 # Adjustable Parameters
@@ -158,7 +161,7 @@ def visualize_curvature_with_legend(points, curvatures, curvature_threshold=0.05
     curvatures_normalized = curvatures_clipped / curvature_threshold
     
     # Map normalized curvature to colors using 'jet' colormap
-    colormap = cm.get_cmap('jet')
+    colormap = plt.get_cmap('jet')
     colors = colormap(curvatures_normalized)[:, :3]
 
     # Create a point cloud and assign colors based on curvature
@@ -179,22 +182,23 @@ def visualize_curvature_with_legend(points, curvatures, curvature_threshold=0.05
     cbar.set_label("Curvature Value")
     
     # Display the legend as a separate Matplotlib figure
-    plt.show()
+    plt.show(block=True)
     print("Curvature visualization with legend complete.")
 
 # Main execution with additional curvature visualization
-file_path = "/home/besughino/Downloads/pointclouds_24.10.21/C4.txt"
+file_path = "C:\\Users\\besugo\\Documents\\pointclouds\\C4.txt"
 points = load_and_downsample_point_cloud(file_path)
 normals = calculate_normals(points)
 curvatures = calculate_curvature(points, normals)
 labels = cluster_surfaces(points, curvatures)
 
-# Main execution
-file_path = "/home/besughino/Downloads/pointclouds_24.10.21/C4.txt"
-points = load_and_downsample_point_cloud(file_path)
-normals = calculate_normals(points)
-curvatures = calculate_curvature(points, normals)
-labels = cluster_surfaces(points, curvatures)
-visualize_clusters(points, labels, normals)
+# # Main execution
+# file_path = "C:\\Users\\besugo\\Documents\\pointclouds\\C4.txt"
+# points = load_and_downsample_point_cloud(file_path)
+# normals = calculate_normals(points)
+# curvatures = calculate_curvature(points, normals)
+# labels = cluster_surfaces(points, curvatures)
+
+# visualize_clusters(points, labels, normals)
 # New curvature-based visualization
 visualize_curvature_with_legend(points, curvatures)
