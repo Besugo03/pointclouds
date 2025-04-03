@@ -2,10 +2,15 @@ import torch
 from torch.nn import Linear, ReLU
 import torch.nn.functional as F
 from torch_geometric.nn import PointNetConv, global_max_pool
-from torch_geometric.utils import farthest_point_sample, knn
-
-import torch
+from torch_geometric.utils import knn
+from torch_geometric.nn.pool import fps
+import os
 from torch_geometric.data import Data
+
+
+CHECKPOINT_DIR = "checkpoints"
+SAVE_EVERY = 5  # Save every 5 epochs
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 def parse_txt_to_data(txt_path):
     with open(txt_path, 'r') as f:
@@ -40,6 +45,15 @@ def parse_txt_to_data(txt_path):
     y_instance = torch.tensor(instance_labels, dtype=torch.long)    # (N,)
 
     return Data(pos=pos, x=x, y_semantic=y_semantic, y_instance=y_instance)
+
+def dir_to_dataset(raw_txt_dir, processed_dir):
+    os.makedirs(processed_dir, exist_ok=True)
+    
+    for txt_file in os.listdir(raw_txt_dir):
+        if txt_file.endswith(".txt"):
+            txt_path = os.path.join(raw_txt_dir, txt_file)
+            data = parse_txt_to_data(txt_path)  # Use the parser from earlier
+            torch.save(data, os.path.join(processed_dir, f"{txt_file[:-4]}.pt"))
 
 class PointNetPlusPlus(torch.nn.Module):
     def __init__(self, in_channels=7, num_classes=3, embed_dim=64):
@@ -83,13 +97,13 @@ class PointNetPlusPlus(torch.nn.Module):
     def forward(self, x, pos, batch):
         # --- Encoder ---
         # SA1: Downsample and extract local features
-        idx_sa1 = farthest_point_sample(pos, ratio=0.5, batch=batch)
+        idx_sa1 = fps(pos, ratio=0.5, batch=batch)
         sa1_pos, sa1_batch = pos[idx_sa1], batch[idx_sa1]
         edge_index_sa1 = knn(pos, sa1_pos, k=32, batch_x=batch, batch_y=sa1_batch)
         x_sa1 = self.sa1(x=(x, None), pos=(pos, sa1_pos), edge_index=edge_index_sa1)
 
         # SA2: Further downsample
-        idx_sa2 = farthest_point_sample(sa1_pos, ratio=0.25, batch=sa1_batch)
+        idx_sa2 = fps(sa1_pos, ratio=0.25, batch=sa1_batch)
         sa2_pos, sa2_batch = sa1_pos[idx_sa2], sa1_batch[idx_sa2]
         edge_index_sa2 = knn(sa1_pos, sa2_pos, k=64, batch_x=sa1_batch, batch_y=sa2_batch)
         x_sa2 = self.sa2(x=(x_sa1, None), pos=(sa1_pos, sa2_pos), edge_index=edge_index_sa2)
@@ -176,12 +190,14 @@ def discriminative_loss(embeddings, instance_labels, delta_var=0.5, delta_dist=1
             for j in range(i + 1, num_instances):
                 loss_dist += torch.clamp(2 * delta_dist - torch.norm(means[i] - means[j]), min=0)**2
 
-    return (loss_var + 0.1 * loss_dist + 0.001 * loss_reg) / len(unique_instances)
+    # Add epsilon to prevent division by zeroc
+    return (loss_var + 0.1 * loss_dist + 0.001 * loss_reg) / (len(unique_instances) + 1e-8)
 
+training_dataset_dir = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/training_dataset"
 
 from torch_geometric.loader import DataLoader
 
-dataset = SurfaceDataset(root='path/to/data')
+dataset = SurfaceDataset(root=training_dataset_dir)
 train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
 model = PointNetPlusPlus(in_channels=7, num_classes=3, embed_dim=64)
@@ -200,30 +216,69 @@ for epoch in range(100):
         total_loss.backward()
         optimizer.step()
 
+        # saving the epoch periodically to avoid overfitting
+        if (epoch + 1) % SAVE_EVERY == 0:
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': total_loss / len(train_loader),
+            }, os.path.join(CHECKPOINT_DIR, f'model_epoch_{epoch+1}.pth'))
+
 # Save model checkpoint
 torch.save({
     'model_state_dict': model.state_dict(),
     'optimizer_state_dict': optimizer.state_dict(),
 }, 'model_checkpoint.pth')
 
+# pointcloud to test inference on
+test_pointcloud = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/A_03.25.25_0050_pts.txt"
+
+SURFACE_CLASSES = {
+    0: "plane",
+    1: "hyperbolic paraboloid",
+    2: "cone",
+    3: "cylinder",
+    4: "sphere",
+    5: "ellipsoid",
+    6: "torus",
+}
 # inference & postprocessing
+test_data = parse_txt_to_data(test_pointcloud)
+test_loader = DataLoader([test_data], batch_size=1)
 model.eval()
 with torch.no_grad():
-    x, pos, batch = batch.x, batch.pos, batch.batch  # Extract data from the batch
-    semantic_pred, embeddings = model(x, pos, batch)
+    for batch in test_loader:
+        semantic_pred, embeddings = model(batch.x, batch.pos, batch.batch)
+        semantic_pred = semantic_pred.argmax(dim=1)
+        instance_pred = embeddings.argmax(dim=1)
 
-# Semantic labels
-semantic_labels = torch.argmax(semantic_pred, dim=1).cpu().numpy()
+        # Map instance IDs to colors
+        instance_colors = torch.zeros_like(batch.pos)
 
-# Instance clustering (example for "flat" surfaces)
-flat_mask = (semantic_labels == FLAT_CLASS_ID)
-flat_embeddings = embeddings[flat_mask].cpu().numpy()
-
-# DBSCAN clustering
-from sklearn.cluster import DBSCAN
-clustering = DBSCAN(eps=0.3, min_samples=10)
-instance_ids = clustering.fit_predict(flat_embeddings)
-
+        for i, instance_id in enumerate(instance_pred):
+            color = torch.tensor([float(instance_id) / len(torch.unique(instance_pred)), 0.5, 0.5])
+            instance_colors[i] = color
+        # Convert to numpy for visualization
+        pos = batch.pos.cpu().numpy()
+        instance_colors = instance_colors.cpu().numpy()
+        # Save the colored point cloud
+        output_path = "output.ply"
+        with open(output_path, 'w') as f:
+            f.write("ply\n")
+            f.write("format ascii 1.0\n")
+            f.write(f"element vertex {len(pos)}\n")
+            f.write("property float x\n")
+            f.write("property float y\n")
+            f.write("property float z\n")
+            f.write("property uchar red\n")
+            f.write("property uchar green\n")
+            f.write("property uchar blue\n")
+            f.write("end_header\n")
+            for i in range(len(pos)):
+                r, g, b = (instance_colors[i] * 255).astype(int)
+                f.write(f"{pos[i][0]} {pos[i][1]} {pos[i][2]} {r} {g} {b}\n")
+        print(f"Saved colored point cloud to {output_path}")
 
 # visualization
 # import open3d as o3d
@@ -232,3 +287,9 @@ instance_ids = clustering.fit_predict(flat_embeddings)
 # pcd.points = o3d.utility.Vector3dVector(pos.cpu().numpy())
 # pcd.colors = o3d.utility.Vector3dVector(instance_colors)  # Map instance IDs to colors
 # o3d.visualization.draw_geometries([pcd])
+
+
+# TODO : Things that could be implemented
+# 2. implement early stopping
+# 3. implement model evaluation
+# 4. implement model dropout
