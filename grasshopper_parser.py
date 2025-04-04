@@ -29,6 +29,8 @@ def clean_grasshopper_file(file_path):
             # if the first character is a number, then it is a point data line
             if line[0].isdigit() or line[0] == '-':
                 file_contents.append([line])
+            if line[0] == "[":
+                file_contents.append("\n")
             else:
                 continue
 

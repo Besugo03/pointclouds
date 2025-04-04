@@ -157,6 +157,19 @@ def load_and_downsample_point_cloud_new(
     downsampled = pcl.voxel_down_sample(best_voxel)
     return np.asarray(downsampled.points)
 
+def load_and_downsample_point_cloud_by_skip(file_path, step_size):
+    # "downsamples" the point cloud by skipping points.
+    # if we encounter a double \n\n in the txt file, or if it was in the lines we skipped, 
+    # we re-insert it before appending the desired point.
+    print("Loading point cloud...")
+    points = np.loadtxt(file_path, delimiter=",")
+    print(f"Loaded {points.shape[0]} points.")
+    # downsample the point cloud by skipping points
+    print(points)
+    downsampled_points = points[::step_size]
+    print(f"Downsampled to {downsampled_points.shape[0]} points.")
+    return downsampled_points
+
 # Compute normals using PCA on neighbors
 def calculate_normals(points, KDtree, k_neighbors=K_NEIGHBORS):
     print("Calculating normals...")
@@ -347,9 +360,7 @@ def visualize_curvature_with_legend(points, curvatures, curvature_threshold=0.5)
     # calculate the curvature threshold dynamically by taking the 95th percentile
     # of curvature values
     curvature_threshold = np.percentile(curvatures, 95)
-
     try :
-
         # Clip and normalize curvature values for better contrast
         print("Clipping and normalizing curvatures...")
         curvatures_clipped = np.clip(curvatures, 0, curvature_threshold)
@@ -391,11 +402,11 @@ def visualize_curvature_with_legend(points, curvatures, curvature_threshold=0.5)
         print(f"Error visualizing curvature with legend: {e}")
 
 # file_path = "pr_01_fixed.txt"
-file_path = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/MODEL_analog_cleaned/A_03.24.25_0040_pts.txt"
+file_path = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/MODEL_analog_cleaned/A_03.24.25_0022_pts.txt"
 
 def benchmark_functions():
     # Carica i dati
-    points = load_and_downsample_point_cloud_new(file_path)
+    points = load_and_downsample_point_cloud_by_skip(file_path, step_size=10)
     
     # Crea una KDTree per il riutilizzo
     tree = KDTree(points)
@@ -415,7 +426,7 @@ def benchmark_functions():
 
     # con metodo open3d
     start_time = time.time()
-    normals_open3d = calculate_normals_open3d(points, k_neighbors=10)
+    normals_open3d = calculate_normals_open3d(points, k_neighbors=25)
     open3d_time = time.time() - start_time
     print(f"Calcolo delle normali Open3D: {open3d_time:.2f} secondi")
     print(f"Speedup: {normal_time / open3d_time:.2f}x")
@@ -466,6 +477,38 @@ def benchmark_functions():
     curvatures2 = calculate_curvature_vectorized(points, normals_open3d, tree=tree)
     visualize_curvature_with_pyvista(points, curvatures2)
     visualize_curvature_with_pyvista(points, curvatures_original)
+
+def calculate_and_export_pointcloud(input_file_path : str, 
+                                    output_file_dir : str,
+                                    voxel_size : float = VOXEL_SIZE,
+                                    k_neighbors : int = K_NEIGHBORS):
+    # calculate the pointcloud using :
+    # 1. load_and_downsample_point_cloud
+    # 2. calculate_normals (using the parallel version)
+    # 3. calculate_curvature (using the parallel version)
+    # 4. save the pointcloud to a file in output_file_dir (name of the file = input_file_path + "_processed.txt")
+    # the pointcloud will be saved in format x,y,z,nx,ny,nz,curvature
+
+    # load and downsample the point cloud
+    points = load_and_downsample_point_cloud_by_skip(input_file_path, step_size=10)
+    # create a KDTree for the point cloud
+    tree = KDTree(points)
+    # calculate normals using the parallel version
+    normals = calculate_normals_parallel(points)
+    # calculate curvature using the parallel version
+    curvatures = calculate_curvature_vectorized(points, normals, tree=tree)
+    import os
+    # save the point cloud to a new file which has the same name as the input file with "_processed.txt" appended
+    # since it has "." in the name, we need to split the name and append "_processed" to the first part
+    # get the name of the file without the extension
+    filename = os.path.splitext(os.path.basename(input_file_path))[0]
+    # create the output file path
+    output_file_path = os.path.join(output_file_dir, filename + "_processed.txt")
+    with open(output_file_path, 'w') as f:
+        for i in range(len(points)):
+            f.write(f"{points[i][0]},{points[i][1]},{points[i][2]},{normals[i][0]},{normals[i][1]},{normals[i][2]},{curvatures[i]}\n")
+    print(f"Point cloud saved to {output_file_path}")
+    return points, normals, curvatures
 
 # Esegui il benchmark
 if __name__ == '__main__':
