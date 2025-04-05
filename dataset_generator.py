@@ -6,40 +6,49 @@ coords_only_dir = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/M
 output_dir = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/processed/"
 
 # Define a wrapper function to run the multithreaded task
-def threaded_task(txt_file_path, output_dir):
-    calculate_and_export_pointcloud(input_file_path=txt_file_path, 
-                                    output_file_dir=output_dir)
+def threaded_task(txt_file_path, output_dir, surfacePoints, surfaces):
+    calculate_and_export_pointcloud(
+                                    surfacepoints=surfacePoints,
+                                    surfaces=surfaces,
+                                    input_file_path=txt_file_path, 
+                                    output_file_dir=output_dir,
+                                    )
 
-test_path = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/MODEL_analog/A_03.24.25_0001_pts.txt"
-computed_testpath = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/processed/A_03.24.25_0001_pts_processed.txt"
-lines = []
-surfaces = []
-computed_surfaces_points = []
+# nuvola di test originale uscita da grasshopper
+test_ghCloud = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/MODEL_analog/A_03.24.25_0001_pts.txt"
 
-with open(test_path, 'r') as f:
-    lines = f.readlines()
-for line in lines:
-    if line.startswith("["):
-        surfaces.append(line.strip())
-
-with open(computed_testpath, 'r') as f:
-    lines = f.read()
-    computed_surfaces_str = lines.split('\n\n')
+# nuvola di test che include la nuvola con le normali e curvatura calcolate
+test_computedCloud = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/processed/A_03.24.25_0001_pts_processed.txt"
 
 
-print(surfaces)
-print(len(computed_surfaces_str))
-
-
+ghCloudsDir = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/"
 if __name__ == '__main__':
-    files = os.listdir(coords_only_dir)
+    files = os.listdir(ghCloudsDir)
+    print(files)
     for file in files:
-        if file.endswith(".txt"):
-            # Get the file name without the extension
-            filename = os.path.splitext(file)[0]
-            # Define the path to the .txt file
-            txt_file_path = os.path.join(coords_only_dir, file)
-            # Call the function to convert .txt to .ply
-            thread = Thread(target=threaded_task, args=(txt_file_path, output_dir))
+        # we have the corresponding points for each surface based on index.
+        # eg. in surfacepoints[0] there will be the points of the surface described in surfaces[0].
+        surfacePoints = []
+        surfaces = []
+        surfacePointsIdx = -1
+        print(file)
+        if file.endswith("_pts.txt"):
+            with open(os.path.join(ghCloudsDir,file), 'r') as f:
+                lines = f.readlines()
+            for line in lines:
+                line = line.strip()
+                if line == "":
+                    continue
+                elif line.startswith("["):
+                    surfaces.append(line.strip())
+                    surfacePointsIdx += 1
+                elif line[0].isdigit() or line[0] == '-':
+                    try : surfacePoints[surfacePointsIdx]
+                    except:
+                        surfacePoints.append([])
+                    surfacePoints[surfacePointsIdx].append([line])
+                f.close()
+            txt_file_path = os.path.join(ghCloudsDir, file)
+            thread = Thread(target=threaded_task, args=(txt_file_path, output_dir, surfacePoints, surfaces))
             thread.start()
             thread.join()  # Wait for the thread to finish before proceeding

@@ -157,18 +157,45 @@ def load_and_downsample_point_cloud_new(
     downsampled = pcl.voxel_down_sample(best_voxel)
     return np.asarray(downsampled.points)
 
-def load_and_downsample_point_cloud_by_skip(file_path, step_size):
+def load_and_downsample_point_cloud_by_skip(surfaces : list, surfacePoints : list, step_size : int):
+    global lastpoints, lastpointsPosition
+    lastpoints = []
+    lastpointsPosition = []
     # "downsamples" the point cloud by skipping points.
     # if we encounter a double \n\n in the txt file, or if it was in the lines we skipped, 
     # we re-insert it before appending the desired point.
-    print("Loading point cloud...")
-    points = np.loadtxt(file_path, delimiter=",")
-    print(f"Loaded {points.shape[0]} points.")
-    # downsample the point cloud by skipping points
-    print(points)
-    downsampled_points = points[::step_size]
-    print(f"Downsampled to {downsampled_points.shape[0]} points.")
-    return downsampled_points
+    
+    # now we have a list of surfaces, we can skip the points for each one
+    for i in range(len(surfacePoints)):
+        # Downsample the points
+        surfacePoints[i] = [surfacePoints[i][j] for j in range(len(surfacePoints[i])) if j % step_size == 0]
+        print("last point is : ",surfacePoints[i][-1])
+        lastpoints.append(surfacePoints[i][-1])
+        # must also sum the previous lengths of lastpointIdx
+        # to get the correct index of the last point
+        if i == 0:
+            lastpointsPosition.append(len(surfacePoints[i]))
+        else:
+            lastpointsPosition.append(len(surfacePoints[i]) + lastpointsPosition[-1])
+        print(f"Downsampled surface to {len(surfacePoints[i])} points.")
+        print(lastpoints)
+        print(lastpointsPosition)
+    
+    # now we join the surfaces back together and convert to a numpy array
+    
+    final_points = []
+    for pointsList in surfacePoints:
+        # now we can convert to a numpy array.
+        # each subarray in pointslist is a string. There's one for each line.
+        # we need to convert it to a float array
+        points = np.array([list(map(float, point[0].split(","))) for point in pointsList])
+        final_points.append(points)
+
+    # now we can concatenate the points
+    final_points = np.concatenate(final_points, axis=0)
+    print(f"Downsampled to {final_points.shape[0]} points.")
+    return final_points
+
 
 # Compute normals using PCA on neighbors
 def calculate_normals(points, KDtree, k_neighbors=K_NEIGHBORS):
@@ -478,7 +505,9 @@ def benchmark_functions():
     visualize_curvature_with_pyvista(points, curvatures2)
     visualize_curvature_with_pyvista(points, curvatures_original)
 
-def calculate_and_export_pointcloud(input_file_path : str, 
+def calculate_and_export_pointcloud(surfacepoints : list,
+                                    surfaces : list,
+                                    input_file_path : str,
                                     output_file_dir : str,
                                     voxel_size : float = VOXEL_SIZE,
                                     k_neighbors : int = K_NEIGHBORS):
@@ -490,7 +519,11 @@ def calculate_and_export_pointcloud(input_file_path : str,
     # the pointcloud will be saved in format x,y,z,nx,ny,nz,curvature
 
     # load and downsample the point cloud
-    points = load_and_downsample_point_cloud_by_skip(input_file_path, step_size=10)
+    points = load_and_downsample_point_cloud_by_skip(surfaces, surfacepoints, step_size=10)
+    print("LastPoints :")
+    print(lastpoints)
+    print("LastPointsPosition :")
+    print(lastpointsPosition)
     # create a KDTree for the point cloud
     tree = KDTree(points)
     # calculate normals using the parallel version
@@ -505,8 +538,12 @@ def calculate_and_export_pointcloud(input_file_path : str,
     # create the output file path
     output_file_path = os.path.join(output_file_dir, filename + "_processed.txt")
     with open(output_file_path, 'w') as f:
+        f.write(surfaces[0] + "\n")
         for i in range(len(points)):
             f.write(f"{points[i][0]},{points[i][1]},{points[i][2]},{normals[i][0]},{normals[i][1]},{normals[i][2]},{curvatures[i]}\n")
+            if i in lastpointsPosition:
+                print("i in lastpoints position : ",surfaces[lastpointsPosition.index(i)+1])
+                f.write(surfaces[lastpointsPosition.index(i)+1] + "\n")
     print(f"Point cloud saved to {output_file_path}")
     return points, normals, curvatures
 
