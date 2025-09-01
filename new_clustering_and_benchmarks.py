@@ -61,13 +61,13 @@ def visualize_curvature_with_pyvista(points, curvatures):
     )
     
     # Aggiungi una barra dei colori
-    plotter.add_scalar_bar(
-        title="Curvature",
-        n_labels=5,
-        italic=False,
-        fmt="%.2f",
-        font_family="arial"
-    )
+    # plotter.add_scalar_bar(
+    #     title="Curvature",
+    #     n_labels=5,
+    #     italic=False,
+    #     fmt="%.2f",
+    #     font_family="arial"
+    # )
     
     # Mostra il visualizzatore
     print("Apertura del visualizzatore. Usa il mouse per ruotare/zoomare.")
@@ -257,7 +257,7 @@ def calculate_normals_vectorized(points, k_neighbors=K_NEIGHBORS):
     _, indices = tree.query(points, k=k_neighbors)
     
     # Raccoglie i vicini per tutti i punti
-    neighbors = np.array([points[idx] for idx in indices])
+    neighbors = np.array([points[np.atleast_1d(idx)] for idx in np.atleast_1d(indices)])
     
     normals = np.zeros((len(points), 3))
     for i in range(len(points)):
@@ -359,7 +359,7 @@ def visualize_clusters(points, labels, normals):
 
         print("Calculating surface types...")
         unique_labels = np.unique(labels)
-        colors = plt.cm.jet(np.linspace(0, 1, len(unique_labels)))[:, :3]
+        colors = cm.get_cmap('jet')(np.linspace(0, 1, len(unique_labels)))[:, :3]
 
         print("Classifying surface types...")
         pcl = o3d.geometry.PointCloud()
@@ -375,135 +375,135 @@ def visualize_clusters(points, labels, normals):
         print("arrows and spheres created.")
 
         print("Visualizing point cloud with clusters...")
-        o3d.visualization.draw_geometries([pcl] + geometries)
-        o3d.visualization.draw_geometries([pcl])
+        # o3d.visualization.draw_geometries([pcl] + geometries)
+        # o3d.visualization.draw_geometries([pcl])
         print("Visualization complete.")
     except Exception as e:
         print(f"Error visualizing clusters: {e}")
 
 # Visualize point cloud with colors based on curvature and add a legend
 # this uses Open3D for visualization, which is buggy and may crash
-def visualize_curvature_with_legend(points, curvatures, curvature_threshold=0.5):
-    # calculate the curvature threshold dynamically by taking the 95th percentile
-    # of curvature values
-    curvature_threshold = np.percentile(curvatures, 95)
-    try :
-        # Clip and normalize curvature values for better contrast
-        print("Clipping and normalizing curvatures...")
-        curvatures_clipped = np.clip(curvatures, 0, curvature_threshold)
-        curvatures_normalized = curvatures_clipped / curvature_threshold
+# def visualize_curvature_with_legend(points, curvatures, curvature_threshold=0.5):
+#     # calculate the curvature threshold dynamically by taking the 95th percentile
+#     # of curvature values
+#     curvature_threshold = np.percentile(curvatures, 95)
+#     try :
+#         # Clip and normalize curvature values for better contrast
+#         print("Clipping and normalizing curvatures...")
+#         curvatures_clipped = np.clip(curvatures, 0, curvature_threshold)
+#         curvatures_normalized = curvatures_clipped / curvature_threshold
         
-        # Map normalized curvature to colors using 'jet' colormap
-        print("Mapping curvature to colors...")
-        colormap = plt.get_cmap('jet')
-        colors = colormap(curvatures_normalized)[:, :3]
+#         # Map normalized curvature to colors using 'jet' colormap
+#         print("Mapping curvature to colors...")
+#         colormap = plt.get_cmap('jet')
+#         colors = colormap(curvatures_normalized)[:, :3]
 
-        # Create a point cloud and assign colors based on curvature
-        print("Creating point cloud with curvature colors...")
-        pcl = o3d.geometry.PointCloud()
-        print("using utility code")
-        # using utility crashes execution
-        pcl.points = o3d.utility.Vector3dVector(points)
-        pcl.colors = o3d.utility.Vector3dVector(colors)
-        print("utility code ends")
+#         # Create a point cloud and assign colors based on curvature
+#         print("Creating point cloud with curvature colors...")
+#         pcl = o3d.geometry.PointCloud()
+#         print("using utility code")
+#         # using utility crashes execution
+#         pcl.points = o3d.utility.Vector3dVector(points)
+#         pcl.colors = o3d.utility.Vector3dVector(colors)
+#         print("utility code ends")
         
 
-        # Open3D visualization for the point cloud
-        print("Visualizing curvature with legend...")
-        o3d.visualization.draw_geometries([pcl], window_name="Curvature Visualization with Legend")
-        print("Visualization complete.")
+#         # Open3D visualization for the point cloud
+#         print("Visualizing curvature with legend...")
+#         o3d.visualization.draw_geometries([pcl], window_name="Curvature Visualization with Legend")
+#         print("Visualization complete.")
 
-        # Create a colorbar for the legend using Matplotlib
-        fig, ax = plt.subplots(figsize=(6, 1))
-        fig.subplots_adjust(bottom=0.5)
+#         # Create a colorbar for the legend using Matplotlib
+#         fig, ax = plt.subplots(figsize=(6, 1))
+#         fig.subplots_adjust(bottom=0.5)
 
-        # Configure colorbar settings
-        norm = plt.Normalize(vmin=0, vmax=curvature_threshold)
-        cbar = plt.colorbar(cm.ScalarMappable(norm=norm, cmap=colormap), cax=ax, orientation='horizontal')
-        cbar.set_label("Curvature Value")
+#         # Configure colorbar settings
+#         norm = plt.Normalize(vmin=0, vmax=curvature_threshold)
+#         cbar = plt.colorbar(cm.ScalarMappable(norm=norm, cmap=colormap), cax=ax, orientation='horizontal')
+#         cbar.set_label("Curvature Value")
         
-        # Display the legend as a separate Matplotlib figure
-        plt.show()
-        print("Curvature visualization with legend complete.")
-    except Exception as e:
-        print(f"Error visualizing curvature with legend: {e}")
+#         # Display the legend as a separate Matplotlib figure
+#         plt.show()
+#         print("Curvature visualization with legend complete.")
+#     except Exception as e:
+#         print(f"Error visualizing curvature with legend: {e}")
 
 # file_path = "pr_01_fixed.txt"
 file_path = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/MODEL_analog_cleaned/A_03.24.25_0022_pts.txt"
 
-def benchmark_functions():
-    # Carica i dati
-    points = load_and_downsample_point_cloud_by_skip(file_path, step_size=10)
+# def benchmark_functions():
+#     # Carica i dati
+#     points = load_and_downsample_point_cloud_by_skip(file_path, step_size=10)
     
-    # Crea una KDTree per il riutilizzo
-    tree = KDTree(points)
+#     # Crea una KDTree per il riutilizzo
+#     tree = KDTree(points)
     
-    # benchmark per il calcolo delle normali
-    start_time = time.time()
-    normals = calculate_normals(points, tree)
-    normal_time = time.time() - start_time
-    print(f"Calcolo delle normali: {normal_time:.2f} secondi")
+#     # benchmark per il calcolo delle normali
+#     start_time = time.time()
+#     normals = calculate_normals(points, tree)
+#     normal_time = time.time() - start_time
+#     print(f"Calcolo delle normali: {normal_time:.2f} secondi")
 
-    # con metodo parallelo
-    start_time = time.time()
-    normals_parallel = calculate_normals_parallel(points)
-    parallel_time = time.time() - start_time
-    print(f"Calcolo delle normali parallelo: {parallel_time:.2f} secondi")
-    print(f"Speedup: {normal_time / parallel_time:.2f}x")
+#     # con metodo parallelo
+#     start_time = time.time()
+#     normals_parallel = calculate_normals_parallel(points)
+#     parallel_time = time.time() - start_time
+#     print(f"Calcolo delle normali parallelo: {parallel_time:.2f} secondi")
+#     print(f"Speedup: {normal_time / parallel_time:.2f}x")
 
-    # con metodo open3d
-    start_time = time.time()
-    normals_open3d = calculate_normals_open3d(points, k_neighbors=25)
-    open3d_time = time.time() - start_time
-    print(f"Calcolo delle normali Open3D: {open3d_time:.2f} secondi")
-    print(f"Speedup: {normal_time / open3d_time:.2f}x")
+#     # con metodo open3d
+#     start_time = time.time()
+#     normals_open3d = calculate_normals_open3d(points, k_neighbors=25)
+#     open3d_time = time.time() - start_time
+#     print(f"Calcolo delle normali Open3D: {open3d_time:.2f} secondi")
+#     print(f"Speedup: {normal_time / open3d_time:.2f}x")
 
-    # con metodo vettorizzato
-    start_time = time.time()
-    normals_vectorized = calculate_normals_vectorized(points)
-    vectorized_time = time.time() - start_time
-    print(f"Calcolo delle normali vettorizzato: {vectorized_time:.2f} secondi")
-    print(f"Speedup: {normal_time / vectorized_time:.2f}x")
+#     # con metodo vettorizzato
+#     start_time = time.time()
+#     normals_vectorized = calculate_normals_vectorized(points)
+#     vectorized_time = time.time() - start_time
+#     print(f"Calcolo delle normali vettorizzato: {vectorized_time:.2f} secondi")
+#     print(f"Speedup: {normal_time / vectorized_time:.2f}x")
 
-    # con metodo vettorizzato esatto
-    # start_time = time.time()
-    # normals_vectorized_exact = calculate_normals_vectorized_exact(points)
-    # vectorized_exact_time = time.time() - start_time
-    # print(f"Calcolo delle normali vettorizzato esatto: {vectorized_exact_time:.2f} secondi")
-    # print(f"Speedup: {normal_time / vectorized_exact_time:.2f}x")
+#     # con metodo vettorizzato esatto
+#     # start_time = time.time()
+#     # normals_vectorized_exact = calculate_normals_vectorized_exact(points)
+#     # vectorized_exact_time = time.time() - start_time
+#     # print(f"Calcolo delle normali vettorizzato esatto: {vectorized_exact_time:.2f} secondi")
+#     # print(f"Speedup: {normal_time / vectorized_exact_time:.2f}x")
 
 
-    # Verifica che i risultati siano simili
-    print("Differenza media tra normali originali e parallele:", 
-          np.mean(np.abs(normals - normals_parallel)))
-    print("Differenza media tra normali originali e Open3D:",
-            np.mean(np.abs(normals - normals_open3d)))
-    print("Differenza media tra normali originali e vettorizzate:",
-            np.mean(np.abs(normals - normals_vectorized)))
-    # print("Differenza media tra normali originali e vettorizzate esatte:",
-    #         np.mean(np.abs(normals - normals_vectorized_exact)))
+#     # Verifica che i risultati siano simili
+#     print("Differenza media tra normali originali e parallele:", 
+#           np.mean(np.abs(normals - normals_parallel)))
+#     print("Differenza media tra normali originali e Open3D:",
+#             np.mean(np.abs(normals - normals_open3d)))
+#     print("Differenza media tra normali originali e vettorizzate:",
+#             np.mean(np.abs(normals - normals_vectorized)))
+#     # print("Differenza media tra normali originali e vettorizzate esatte:",
+#     #         np.mean(np.abs(normals - normals_vectorized_exact)))
     
-    # Benchmark per il metodo originale
-    start_time = time.time()
-    curvatures_original = calculate_curvature(points, normals=normals, KDtree=tree)
-    original_time = time.time() - start_time
-    print(f"Metodo originale: {original_time:.2f} secondi")
+#     # Benchmark per il metodo originale
+#     start_time = time.time()
+#     curvatures_original = calculate_curvature(points, normals=normals, KDtree=tree)
+#     original_time = time.time() - start_time
+#     print(f"Metodo originale: {original_time:.2f} secondi")
     
-    # Benchmark per il metodo vettorizzato
-    start_time = time.time()
-    curvatures_vectorized = calculate_curvature_vectorized(points, normals=normals, tree=tree)
-    vectorized_time = time.time() - start_time
-    print(f"Metodo vettorizzato: {vectorized_time:.2f} secondi")
-    print(f"Speedup: {original_time / vectorized_time:.2f}x")
+#     # Benchmark per il metodo vettorizzato
+#     start_time = time.time()
+#     curvatures_vectorized = calculate_curvature_vectorized(points, normals=normals, tree=tree)
+#     vectorized_time = time.time() - start_time
+#     print(f"Metodo vettorizzato: {vectorized_time:.2f} secondi")
+#     print(f"Speedup: {original_time / vectorized_time:.2f}x")
 
-    # Verifica sulla similaritiá dei risultati
-    print("Differenza media tra curvature originali e vettorizzate:", 
-          np.mean(np.abs(curvatures_original - curvatures_vectorized)))
+#     # Verifica sulla similaritiá dei risultati
+#     print("Differenza media tra curvature originali e vettorizzate:", 
+#           np.mean(np.abs(curvatures_original - curvatures_vectorized)))
     
-    # Visualizza la curvatura con legenda
-    curvatures2 = calculate_curvature_vectorized(points, normals_open3d, tree=tree)
-    visualize_curvature_with_pyvista(points, curvatures2)
-    visualize_curvature_with_pyvista(points, curvatures_original)
+#     # Visualizza la curvatura con legenda
+#     curvatures2 = calculate_curvature_vectorized(points, normals_open3d, tree=tree)
+#     visualize_curvature_with_pyvista(points, curvatures2)
+#     visualize_curvature_with_pyvista(points, curvatures_original)
 
 def calculate_and_export_pointcloud(surfacepoints : list,
                                     surfaces : list,
@@ -548,6 +548,6 @@ def calculate_and_export_pointcloud(surfacepoints : list,
     return points, normals, curvatures
 
 # Esegui il benchmark
-if __name__ == '__main__':
-    freeze_support()  # This is needed on Windows
-    benchmark_functions()
+# if __name__ == '__main__':
+#     freeze_support()  # This is needed on Windows
+#     benchmark_functions()
