@@ -310,7 +310,9 @@ def calculate_curvature_vectorized(points, normals, tree, k_neighbors=K_NEIGHBOR
     
     # Calcola prodotti scalari
     dot_products = np.sum(main_normals * neighbor_normals, axis=2)  # shape: (n_points, k_neighbors)
-    
+    # prendo il valore assoluto di dot_products per tenere conto sia delle normali che puntano  dentro che quelle fuori al solido.
+    dot_products = np.abs(dot_products)
+
     # Applica clip e arccos per ottenere gli angoli
     dot_products = np.clip(dot_products, -1.0, 1.0)
     angles = np.arccos(dot_products)
@@ -429,7 +431,7 @@ def visualize_clusters(points, labels, normals):
 #         print(f"Error visualizing curvature with legend: {e}")
 
 # file_path = "pr_01_fixed.txt"
-file_path = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/MODEL_analog_cleaned/A_03.24.25_0022_pts.txt"
+# file_path = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/MODEL_analog_cleaned/A_03.24.25_0022_pts.txt"
 
 # def benchmark_functions():
 #     # Carica i dati
