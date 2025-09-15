@@ -4,6 +4,8 @@ from threading import Thread
 from tqdm import tqdm
 import time
 
+from sematic_map_crawler import extract_surface_type
+
 
 base_dir = "/home/besugo/Downloads/MODEL_param/extracted_model/MODEL_param"
 subfolders = [f for f in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, f))]
@@ -53,6 +55,8 @@ if __name__ == '__main__':
                     if line == "":
                         continue
                     elif line.startswith("["):
+                        if extract_surface_type(line) == "untrimmed surface":
+                            continue
                         surfaces.append(line.strip())
                         surfacePoints.append([])  # Create a new list for the new surface
                         surfacePointsIdx += 1

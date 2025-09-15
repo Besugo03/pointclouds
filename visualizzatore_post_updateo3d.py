@@ -73,7 +73,7 @@ def visualize_and_save_surfaces(
         cmin, cmax = all_curvatures.min(), all_curvatures.max()
 
     cmap = plt.get_cmap('gist_rainbow', len(surfaces_data))
-    colormaps_for_gradients = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis']
+    colormaps_for_gradients = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis'] 
     
     for i, surface in enumerate(surfaces_data):
         # ... (Codice per definire marker_properties in base a color_mode - invariato) ...

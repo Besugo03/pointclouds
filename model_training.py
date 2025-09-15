@@ -34,7 +34,9 @@ def parse_txt_to_data(txt_path):
         "sphere": 3,
         "ellipsoid": 4,
         "torus": 5,
-        "untrimmed": 6,
+        "one-sheeted hyperboloid" : 6,
+        "ellipsoid" : 7,
+        "untrimmed surface": 8,
         # Add other types if present, mapping them to appropriate IDs
     }
     # Use a default ID (e.g., max_id + 1) for unknown types, or raise an error
