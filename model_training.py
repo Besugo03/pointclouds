@@ -1,11 +1,15 @@
 import torch
 from torch.nn import Linear, ReLU
 import torch.nn.functional as F
-from torch_geometric.nn import PointNetConv, global_max_pool
+from torch_geometric.nn import PointNetConv, fps, knn_interpolate
 from torch_geometric.nn import knn
 from torch_geometric.nn.pool import fps
 import os
 from torch_geometric.data import Data
+import torch
+from torch.nn import Linear, ReLU, Sequential
+import torch.nn.functional as F
+from torch_geometric.nn import PointNetConv, fps, knn_interpolate
 
 
 CHECKPOINT_DIR = "checkpoints"
@@ -15,14 +19,22 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 def parse_txt_to_data(txt_path):
     # Mapping from semantic type string to class ID
     # Adjust this mapping based on your actual dataset classes
+    # plane: 29912 times
+    # cylinder: 10508 times
+    # cone: 3496 times
+    # sphere: 2305 times
+    # torus: 3275 times
+    # one: 306 times
+    # ellipsoid: 56 times
+    # untrimmed: 8 times
     semantic_map = {
         "plane": 0,
-        "hyperbolic paraboloid": 1,
+        "cylinder": 1,
         "cone": 2,
-        "cylinder": 3,
-        "sphere": 4,
-        "ellipsoid": 5,
-        "torus": 6,
+        "sphere": 3,
+        "ellipsoid": 4,
+        "torus": 5,
+        "untrimmed": 6,
         # Add other types if present, mapping them to appropriate IDs
     }
     # Use a default ID (e.g., max_id + 1) for unknown types, or raise an error
@@ -97,7 +109,13 @@ def dir_to_dataset(raw_txt_dir, processed_dir):
             print(f"Processing: {txt_file}")
             data = parse_txt_to_data(txt_path)
             # Only save if data is valid (contains points)
-            if data.pos.shape[0] > 0:
+            if (
+                data is not None
+                and hasattr(data, 'pos')
+                and data.pos is not None
+                and hasattr(data.pos, 'shape')
+                and data.pos.shape[0] > 0
+            ):
                  save_path = os.path.join(processed_dir, f"{txt_file[:-4]}.pt")
                  torch.save(data, save_path)
                  print(f"Saved: {save_path}")
@@ -107,68 +125,90 @@ def dir_to_dataset(raw_txt_dir, processed_dir):
     print(f"Preprocessing finished. Processed {processed_count} files.")
 
 class PointNetPlusPlus(torch.nn.Module):
-    def __init__(self, in_channels=7, num_classes=3, embed_dim=64):
+    def __init__(self, num_semantic_classes=8, embed_dim=64): # Adjusted num_classes for your parser
         super().__init__()
         
-        # Encoder (Set Abstraction)
-        self.sa1 = PointNetConv(
-            local_nn=torch.nn.Sequential(
-                Linear(in_channels, 64),
-                ReLU(),
-                Linear(64, 64)
-            ),
-            global_nn=torch.nn.Sequential(
-                Linear(64, 128),
-                ReLU(),
-                Linear(128, 128)
-            )
+        # <<< FIX: We are building a standard PointNet++ "U-Net" style architecture.
+        # This involves an encoder (Set Abstraction) and a decoder (Feature Propagation).
+
+        # --- ENCODER (ZOOMING OUT) ---
+
+        # SA1: First level of abstraction.
+        # Input features are 7 (pos=3, normals+curvature=4). local_nn gets these +3 for relative pos.
+        self.sa1_module = PointNetConv(
+            local_nn=Sequential(Linear(7 + 3, 64), ReLU(), Linear(64, 64)),
+            global_nn=Sequential(Linear(64, 128))
         )
         
-        self.sa2 = PointNetConv(
-            local_nn=torch.nn.Sequential(
-                Linear(128 + 3, 128),  # +3 for xyz coordinates
-                ReLU(),
-                Linear(128, 256)
-            ),
-            global_nn=torch.nn.Sequential(
-                Linear(256, 256),
-                ReLU(),
-                Linear(256, 256)
-            )
+        # SA2: Second level of abstraction.
+        # Input is 128 features from SA1. local_nn gets these +3 for relative pos.
+        self.sa2_module = PointNetConv(
+            local_nn=Sequential(Linear(128 + 3, 128), ReLU(), Linear(128, 256)),
+            global_nn=Sequential(Linear(256, 512)) # This is the "bottleneck" with the most abstract features.
         )
 
-        # Decoder (Feature Propagation)
-        self.fp2 = FeaturePropagation(in_channels=256 + 128, out_channels=256)
-        self.fp1 = FeaturePropagation(in_channels=256 + in_channels, out_channels=256)
+        # --- DECODER (ZOOMING BACK IN) ---
+        # <<< FIX: These were the missing parts. They propagate features from coarse to fine.
 
-        # Heads
-        self.semantic_head = Linear(256, num_classes)
-        self.instance_head = Linear(256, embed_dim)
+        # FP2: Propagates features from SA2 back to SA1's resolution.
+        # Input channels = (SA2 features) + (SA1 features) = 512 + 128
+        self.fp2_module = self.create_fp_module(in_channels=512 + 128, mlp_channels=[256, 256])
+
+        # FP1: Propagates features from FP2 back to the original point resolution.
+        # Input channels = (FP2 features) + (Initial features) = 256 + 7
+        self.fp1_module = self.create_fp_module(in_channels=256 + 7, mlp_channels=[128, 128])
+        
+        # --- PREDICTION HEADS ---
+        # <<< FIX: The heads now operate on the final, full-resolution feature map from the decoder.
+        
+        self.semantic_head = Sequential(Linear(128, 64), ReLU(), Linear(64, num_semantic_classes))
+        self.instance_head = Sequential(Linear(128, 64), ReLU(), Linear(64, embed_dim))
+
+    def create_fp_module(self, in_channels, mlp_channels):
+        # Helper to create a Feature Propagation module
+        return Sequential(
+            Linear(in_channels, mlp_channels[0]),
+            ReLU(),
+            Linear(mlp_channels[0], mlp_channels[1])
+        )
 
     def forward(self, x, pos, batch):
-        # --- Encoder ---
-        # SA1: Downsample and extract local features
-        idx_sa1 = fps(pos, ratio=0.5, batch=batch)
-        sa1_pos, sa1_batch = pos[idx_sa1], batch[idx_sa1]
-        edge_index_sa1 = knn(pos, sa1_pos, k=32, batch_x=batch, batch_y=sa1_batch)
-        x_sa1 = self.sa1(x=(x, None), pos=(pos, sa1_pos), edge_index=edge_index_sa1)
-
-        # SA2: Further downsample
-        idx_sa2 = fps(sa1_pos, ratio=0.25, batch=sa1_batch)
-        sa2_pos, sa2_batch = sa1_pos[idx_sa2], sa1_batch[idx_sa2]
-        edge_index_sa2 = knn(sa1_pos, sa2_pos, k=64, batch_x=sa1_batch, batch_y=sa2_batch)
-        x_sa2 = self.sa2(x=(x_sa1, None), pos=(sa1_pos, sa2_pos), edge_index=edge_index_sa2)
-
-        # --- Decoder ---
-        # FP2: Upsample from SA2 to SA1
-        x_fp2 = self.fp2(x=(x_sa1, x_sa2), pos=(sa1_pos, sa2_pos))
+        # <<< FIX: Combined initial features are created here.
+        initial_features = torch.cat([x, pos], dim=1)
         
-        # FP1: Upsample to original resolution
-        x_fp1 = self.fp1(x=(x, x_fp2), pos=(pos, sa1_pos))
+        # --- ENCODER ---
+        # SA1 Layer
+        idx_sa1 = fps(pos, batch, ratio=0.5) # Downsample to 50% of points
+        x_sa1, pos_sa1, batch_sa1 = self.sa1_module(
+            (initial_features, None), (pos, pos[idx_sa1]), batch=(batch, batch[idx_sa1])
+        )
+        
+        # SA2 Layer
+        idx_sa2 = fps(pos_sa1, batch_sa1, ratio=0.25) # Downsample to 25% of the previous set
+        x_sa2, pos_sa2, batch_sa2 = self.sa2_module(
+            (x_sa1, None), (pos_sa1, pos_sa1[idx_sa2]), batch=(batch_sa1, batch_sa1[idx_sa2])
+        )
+        
+        # --- DECODER ---
+        # <<< FIX: This is the full, corrected data flow.
 
-        # --- Heads ---
+        # FP2: Upsample from SA2 to SA1 resolution.
+        # Interpolate SA2 features to SA1's point locations.
+        x_interp2 = knn_interpolate(x_sa2, pos_sa2, pos_sa1, batch_sa2, batch_sa1, k=3)
+        # Combine with SA1's original features (skip connection).
+        x_fp2 = self.fp2_module(torch.cat([x_interp2, x_sa1], dim=1))
+        
+        # FP1: Upsample from SA1 to original resolution.
+        # Interpolate FP2 features to the original point locations.
+        x_interp1 = knn_interpolate(x_fp2, pos_sa1, pos, batch_sa1, batch, k=3)
+        # Combine with the very first features (skip connection).
+        x_fp1 = self.fp1_module(torch.cat([x_interp1, initial_features], dim=1))
+        
+        # --- HEADS ---
+        # Now we have a feature vector for EVERY original point.
         semantic = self.semantic_head(x_fp1)
         embeddings = self.instance_head(x_fp1)
+        
         return semantic, embeddings
 
 class FeaturePropagation(torch.nn.Module):
@@ -223,7 +263,7 @@ class SurfaceDataset(Dataset):
             print(f"Error loading data file: {self.paths[idx]}")
             print(e)
             # Return None or raise error, depending on desired handling
-            return None
+            return Data()
     
 
 def discriminative_loss(embeddings, instance_labels, delta_var=0.5, delta_dist=1.5):
@@ -279,7 +319,7 @@ if len(dataset) == 0:
 print(f"Dataset loaded with {len(dataset)} samples.")
 train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-model = PointNetPlusPlus(in_channels=7, num_classes=3, embed_dim=64)
+model = PointNetPlusPlus(num_semantic_classes=7, embed_dim=64)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
 for epoch in range(100):
@@ -322,7 +362,7 @@ print(f"\nStarting inference on: {test_pointcloud_path}")
 
 # Load the test data
 test_data = parse_txt_to_data(test_pointcloud_path)
-if test_data is None or test_data.pos.shape[0] == 0:
+if test_data is None or not hasattr(test_data, "pos") or test_data.pos is None or test_data.pos.shape[0] == 0:
     print("Could not load or parse test data, skipping inference.")
 else:
     test_loader = DataLoader([test_data], batch_size=1) # Batch size 1 for single file inference
@@ -384,7 +424,7 @@ else:
                  instance_colors_map = {}
 
             # Assign a default color (e.g., gray) for noise points (-1)
-            instance_colors_map[-1] = [0.5, 0.5, 0.5] # Gray
+            instance_colors_map[-1] = (0.5, 0.5, 0.5) # Gray
 
             # Create color array for the point cloud
             point_colors_np = np.array([instance_colors_map[inst_id] for inst_id in instance_pred]) # Shape: (N, 3)
