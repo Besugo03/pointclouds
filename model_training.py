@@ -17,16 +17,15 @@ SAVE_EVERY = 5  # Save every 5 epochs
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 def parse_txt_to_data(txt_path):
-    # Mapping from semantic type string to class ID
-    # Adjust this mapping based on your actual dataset classes
+    # data from semantic crawler :
     # plane: 29912 times
     # cylinder: 10508 times
     # cone: 3496 times
     # sphere: 2305 times
     # torus: 3275 times
-    # one: 306 times
+    # one-sheeted hyperboloid: 306 times
     # ellipsoid: 56 times
-    # untrimmed: 8 times
+    # untrimmed surface: 8 times
     semantic_map = {
         "plane": 0,
         "cylinder": 1,
@@ -37,7 +36,6 @@ def parse_txt_to_data(txt_path):
         "one-sheeted hyperboloid" : 6,
         "ellipsoid" : 7,
         "untrimmed surface": 8,
-        # Add other types if present, mapping them to appropriate IDs
     }
     # Use a default ID (e.g., max_id + 1) for unknown types, or raise an error
     default_semantic_id = max(semantic_map.values()) + 1 if semantic_map else 0
@@ -108,6 +106,7 @@ def dir_to_dataset(raw_txt_dir, processed_dir):
     for txt_file in os.listdir(raw_txt_dir):
         if txt_file.endswith(".txt"):
             txt_path = os.path.join(raw_txt_dir, txt_file)
+
             print(f"Processing: {txt_file}")
             data = parse_txt_to_data(txt_path)
             # Only save if data is valid (contains points)
@@ -130,10 +129,10 @@ class PointNetPlusPlus(torch.nn.Module):
     def __init__(self, num_semantic_classes=8, embed_dim=64): # Adjusted num_classes for your parser
         super().__init__()
         
-        # <<< FIX: We are building a standard PointNet++ "U-Net" style architecture.
+        # We are building a standard PointNet++ "U-Net" style architecture.
         # This involves an encoder (Set Abstraction) and a decoder (Feature Propagation).
 
-        # --- ENCODER (ZOOMING OUT) ---
+        # --- ENCODER ---
 
         # SA1: First level of abstraction.
         # Input features are 7 (pos=3, normals+curvature=4). local_nn gets these +3 for relative pos.
@@ -149,8 +148,8 @@ class PointNetPlusPlus(torch.nn.Module):
             global_nn=Sequential(Linear(256, 512)) # This is the "bottleneck" with the most abstract features.
         )
 
-        # --- DECODER (ZOOMING BACK IN) ---
-        # <<< FIX: These were the missing parts. They propagate features from coarse to fine.
+        # --- DECODER ---
+        # propagating the features from "coarse" to "fine"
 
         # FP2: Propagates features from SA2 back to SA1's resolution.
         # Input channels = (SA2 features) + (SA1 features) = 512 + 128
@@ -161,7 +160,7 @@ class PointNetPlusPlus(torch.nn.Module):
         self.fp1_module = self.create_fp_module(in_channels=256 + 7, mlp_channels=[128, 128])
         
         # --- PREDICTION HEADS ---
-        # <<< FIX: The heads now operate on the final, full-resolution feature map from the decoder.
+        # The heads now operate on the final, full-resolution feature map from the decoder.
         
         self.semantic_head = Sequential(Linear(128, 64), ReLU(), Linear(64, num_semantic_classes))
         self.instance_head = Sequential(Linear(128, 64), ReLU(), Linear(64, embed_dim))
@@ -175,7 +174,7 @@ class PointNetPlusPlus(torch.nn.Module):
         )
 
     def forward(self, x, pos, batch):
-        # <<< FIX: Combined initial features are created here.
+        # Combined initial features are created here
         initial_features = torch.cat([x, pos], dim=1)
         
         # --- ENCODER ---
@@ -192,7 +191,6 @@ class PointNetPlusPlus(torch.nn.Module):
         )
         
         # --- DECODER ---
-        # <<< FIX: This is the full, corrected data flow.
 
         # FP2: Upsample from SA2 to SA1 resolution.
         # Interpolate SA2 features to SA1's point locations.
@@ -307,9 +305,9 @@ PROCESSED_DATA_DIR = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-00
 training_dataset_dir = PROCESSED_DATA_DIR # Use the same variable
 
 # --- Run Preprocessing ---
-print("--- Running Preprocessing ---")
-dir_to_dataset(RAW_DATA_DIR, PROCESSED_DATA_DIR)
-print("--- Preprocessing Done ---")
+# print("--- Running Preprocessing ---")
+# dir_to_dataset(RAW_DATA_DIR, PROCESSED_DATA_DIR)
+# print("--- Preprocessing Done ---")
 
 # --- Now Initialize Dataset and DataLoader ---
 print(f"Initializing dataset from: {training_dataset_dir}")

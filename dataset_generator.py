@@ -1,13 +1,14 @@
 from new_clustering_and_benchmarks import calculate_and_export_pointcloud
 import os
 from threading import Thread
+from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 import time
 
 from sematic_map_crawler import extract_surface_type
 
 
-base_dir = "/home/besugo/Downloads/MODEL_param/extracted_model/MODEL_param"
+base_dir = "C:/Users/user/Downloads/MODEL_param"
 subfolders = [f for f in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, f))]
 
 # Define a wrapper function to run the multithreaded task
@@ -28,6 +29,7 @@ def threaded_task(txt_file_path, output_dir, surfacePoints, surfaces):
 
 
 if __name__ == '__main__':
+    print("test")
     # Count total files to process for progress bar
     total_files = 0
     folder_files = {}
@@ -36,6 +38,9 @@ if __name__ == '__main__':
         files = [f for f in os.listdir(folder_path) if f.endswith("_pts.txt")]
         folder_files[folder] = files
         total_files += len(files)
+        print(f"total files updated to {total_files}")
+    print(f"total files to process : {total_files}")
+    
 
     with tqdm(total=total_files, desc="Processing files") as pbar:
         for folder in subfolders:

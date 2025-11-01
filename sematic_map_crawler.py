@@ -3,7 +3,7 @@ from threading import Thread, Lock
 from tqdm import tqdm
 import re
 
-base_dir = "/home/besugo/Downloads/MODEL_param/extracted_model/MODEL_param"
+base_dir = "C:/Users/user/Downloads/MODEL_param"
 subfolders = [f for f in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, f))]
 
 surfaces = {}
@@ -40,14 +40,14 @@ total_files = sum(
     len([f for f in os.listdir(os.path.join(base_dir, folder)) if f.endswith("_pts.txt")])
     for folder in subfolders
 )
+if __name__ == "__main__":
+    with tqdm(total=total_files, desc="Processing folders") as pbar:
+        for folder in subfolders:
+            t = Thread(target=process_folder, args=(folder, pbar, desc_lock))
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
 
-with tqdm(total=total_files, desc="Processing folders") as pbar:
-    for folder in subfolders:
-        t = Thread(target=process_folder, args=(folder, pbar, desc_lock))
-        t.start()
-        threads.append(t)
-    for t in threads:
-        t.join()
-
-for surface, count in surfaces.items():
-    print(f"{surface}: {count} times")
+    for surface, count in surfaces.items():
+        print(f"{surface}: {count} times")
