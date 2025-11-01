@@ -71,5 +71,5 @@ if __name__ == '__main__':
                     futures.append(future)
             # Wait for all tasks to complete
             for future in futures:
-                future.result()  # This will raise exceptions if any task fails
+                future.result() 
                 pbar.update(1)
