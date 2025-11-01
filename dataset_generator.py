@@ -7,7 +7,6 @@ import time
 
 from sematic_map_crawler import extract_surface_type
 
-
 base_dir = "C:/Users/user/Downloads/MODEL_param"
 subfolders = [f for f in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, f))]
 
@@ -26,8 +25,6 @@ def threaded_task(txt_file_path, output_dir, surfacePoints, surfaces):
 # nuvola di test che include la nuvola con le normali e curvatura calcolate
 # test_computedCloud = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/processed/A_03.24.25_0001_pts_processed.txt"
 
-
-
 if __name__ == '__main__':
     print("test")
     # Count total files to process for progress bar
@@ -41,34 +38,38 @@ if __name__ == '__main__':
         print(f"total files updated to {total_files}")
     print(f"total files to process : {total_files}")
     
-
-    with tqdm(total=total_files, desc="Processing files") as pbar:
-        for folder in subfolders:
-            coords_only_dir = os.path.join(base_dir, folder)
-            output_dir = coords_only_dir + "_processed"
-            os.makedirs(output_dir, exist_ok=True)
-            files = folder_files[folder]
-            for file in files:
-                surfacePoints = []
-                surfaces = []
-                surfacePointsIdx = -1
-                print(f"Processing {file} in {folder}")
-                with open(os.path.join(coords_only_dir, file), 'r') as f:
-                    lines = f.readlines()
-                for line in lines:
-                    line = line.strip()
-                    if line == "":
-                        continue
-                    elif line.startswith("["):
-                        if extract_surface_type(line) == "untrimmed surface":
+    with ThreadPoolExecutor(max_workers=16) as executor:  # Adjust max_workers as needed (e.g., based on CPU cores)
+        futures = []
+        with tqdm(total=total_files, desc="Processing files", unit="file") as pbar:
+            for folder in subfolders:
+                coords_only_dir = os.path.join(base_dir, folder)
+                output_dir = coords_only_dir + "_processed"
+                os.makedirs(output_dir, exist_ok=True)
+                files = folder_files[folder]
+                for file in files:
+                    surfacePoints = []
+                    surfaces = []
+                    surfacePointsIdx = -1
+                    print(f"Processing {file} in {folder}")
+                    with open(os.path.join(coords_only_dir, file), 'r') as f:
+                        lines = f.readlines()
+                    for line in lines:
+                        line = line.strip()
+                        if line == "":
                             continue
-                        surfaces.append(line.strip())
-                        surfacePoints.append([])  # Create a new list for the new surface
-                        surfacePointsIdx += 1
-                    elif (line[0].isdigit() or line[0] == '-') and surfacePointsIdx != -1: 
-                        surfacePoints[surfacePointsIdx].append([line])
-                txt_file_path = os.path.join(coords_only_dir, file)
-                thread = Thread(target=threaded_task, args=(txt_file_path, output_dir, surfacePoints, surfaces))
-                thread.start()
-                thread.join()
+                        elif line.startswith("["):
+                            if extract_surface_type(line) == "untrimmed surface":
+                                continue
+                            surfaces.append(line.strip())
+                            surfacePoints.append([])  # Create a new list for the new surface
+                            surfacePointsIdx += 1
+                        elif (line[0].isdigit() or line[0] == '-') and surfacePointsIdx != -1: 
+                            surfacePoints[surfacePointsIdx].append([line])
+                    txt_file_path = os.path.join(coords_only_dir, file)
+                    # Submit task to executor instead of starting/joining a thread
+                    future = executor.submit(threaded_task, txt_file_path, output_dir, surfacePoints, surfaces)
+                    futures.append(future)
+            # Wait for all tasks to complete
+            for future in futures:
+                future.result()  # This will raise exceptions if any task fails
                 pbar.update(1)
