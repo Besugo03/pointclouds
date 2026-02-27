@@ -1,10 +1,13 @@
 import torch
 from torch.nn import Linear, ReLU, Sequential
 import torch.nn.functional as F
-from torch_geometric.nn import PointNetConv, fps, knn_interpolate
+from torch_geometric.nn import PointNetConv, fps, knn_interpolate, radius
 import os
 from torch_geometric.data import Data, Dataset
 from torch_geometric.loader import DataLoader
+import torch_geometric.transforms as T
+from typing import cast
+
 
 CHECKPOINT_DIR = "checkpoints"
 SAVE_EVERY = 5  # Save every 5 epochs
@@ -38,6 +41,7 @@ def parse_txt_to_data(txt_path):
         lines = f.readlines()
 
     points = []
+
     semantic_labels = []
     instance_labels = []
     current_instance = -1
@@ -131,130 +135,96 @@ def dir_to_dataset(raw_txt_dir, processed_dir):
     print(f"Preprocessing finished. Processed {processed_count} files.")
 
 
+class SAModule(torch.nn.Module):
+    def __init__(self, ratio, r, nn):
+        super().__init__()
+        self.ratio = ratio
+        self.r = r
+        self.conv = PointNetConv(nn, add_self_loops=False)
+
+    def forward(self, x, pos, batch):
+        # 1. Campiona i punti (es. prende il 25% dei punti)
+        idx = fps(pos, batch, ratio=self.ratio)
+        # 2. Trova i vicini entro un raggio 'r'
+        row, col = radius(
+            pos, pos[idx], self.r, batch, batch[idx], max_num_neighbors=64
+        )
+        edge_index = torch.stack([col, row], dim=0)
+
+        # 3. Applica la convoluzione
+        x_dst = None if x is None else x[idx]
+        x = self.conv((x, x_dst), (pos, pos[idx]), edge_index)
+        pos, batch = pos[idx], batch[idx]
+        return x, pos, batch
+
+
 class PointNetPlusPlus(torch.nn.Module):
     def __init__(
         self, num_semantic_classes=8, embed_dim=64
     ):  # Adjusted num_classes for your parser
         super().__init__()
 
-        # We are building a standard PointNet++ "U-Net" style architecture.
-        # This involves an encoder (Set Abstraction) and a decoder (Feature Propagation).
-
-        # --- ENCODER ---
-
-        # SA1: First level of abstraction.
-        # Input features are 7 (pos=3, normals+curvature=4). local_nn gets these +3 for relative pos.
-        self.sa1_module = PointNetConv(
-            local_nn=Sequential(Linear(7 + 3, 64), ReLU(), Linear(64, 64)),
-            global_nn=Sequential(Linear(64, 128)),
+        # ENCODER (4 Livelli)
+        # Input features: 4 (nx, ny, nz, curv). +3 di pos aggiunti automaticamente
+        self.sa1 = SAModule(
+            0.25, 0.1, Sequential(Linear(4 + 3, 64), ReLU(), Linear(64, 64))
+        )
+        self.sa2 = SAModule(
+            0.25, 0.2, Sequential(Linear(64 + 3, 128), ReLU(), Linear(128, 128))
+        )
+        self.sa3 = SAModule(
+            0.25, 0.4, Sequential(Linear(128 + 3, 256), ReLU(), Linear(256, 256))
+        )
+        self.sa4 = SAModule(
+            0.25, 0.8, Sequential(Linear(256 + 3, 512), ReLU(), Linear(512, 512))
         )
 
-        # SA2: Second level of abstraction.
-        # Input is 128 features from SA1. local_nn gets these +3 for relative pos.
-        self.sa2_module = PointNetConv(
-            local_nn=Sequential(Linear(128 + 3, 128), ReLU(), Linear(128, 256)),
-            global_nn=Sequential(
-                Linear(256, 512)
-            ),  # This is the "bottleneck" with the most abstract features.
+        # DECODER (4 Livelli)
+        self.fp4 = FPModule(
+            Sequential(Linear(512 + 256, 256), ReLU(), Linear(256, 256))
         )
-
-        # --- DECODER ---
-        # propagating the features from "coarse" to "fine"
-
-        # FP2: Propagates features from SA2 back to SA1's resolution.
-        # Input channels = (SA2 features) + (SA1 features) = 512 + 128
-        self.fp2_module = self.create_fp_module(
-            in_channels=512 + 128, mlp_channels=[256, 256]
+        self.fp3 = FPModule(
+            Sequential(Linear(256 + 128, 128), ReLU(), Linear(128, 128))
         )
+        self.fp2 = FPModule(Sequential(Linear(128 + 64, 64), ReLU(), Linear(64, 64)))
+        self.fp1 = FPModule(Sequential(Linear(64 + 4, 64), ReLU(), Linear(64, 64)))
 
-        # FP1: Propagates features from FP2 back to the original point resolution.
-        # Input channels = (FP2 features) + (Initial features) = 256 + 7
-        self.fp1_module = self.create_fp_module(
-            in_channels=256 + 7, mlp_channels=[128, 128]
-        )
-
-        # --- PREDICTION HEADS ---
-        # The heads now operate on the final, full-resolution feature map from the decoder.
-
+        # HEADS
         self.semantic_head = Sequential(
-            Linear(128, 64), ReLU(), Linear(64, num_semantic_classes)
+            Linear(64, 64), ReLU(), Linear(64, num_semantic_classes)
         )
-        self.instance_head = Sequential(Linear(128, 64), ReLU(), Linear(64, embed_dim))
-
-    def create_fp_module(self, in_channels, mlp_channels):
-        # Helper to create a Feature Propagation module
-        return Sequential(
-            Linear(in_channels, mlp_channels[0]),
-            ReLU(),
-            Linear(mlp_channels[0], mlp_channels[1]),
-        )
+        self.instance_head = Sequential(Linear(64, 64), ReLU(), Linear(64, embed_dim))
 
     def forward(self, x, pos, batch):
-        # Combined initial features are created here
-        initial_features = torch.cat([x, pos], dim=1)
+        # Encoder
+        x1, pos1, batch1 = self.sa1(x, pos, batch)
+        x2, pos2, batch2 = self.sa2(x1, pos1, batch1)
+        x3, pos3, batch3 = self.sa3(x2, pos2, batch2)
+        x4, pos4, batch4 = self.sa4(x3, pos3, batch3)
 
-        # --- ENCODER ---
-        # SA1 Layer
-        idx_sa1 = fps(pos, batch, ratio=0.5)  # Downsample to 50% of points
-        x_sa1, pos_sa1, batch_sa1 = self.sa1_module(
-            (initial_features, None), (pos, pos[idx_sa1]), batch=(batch, batch[idx_sa1])
-        )
+        # Decoder
+        x = self.fp4(x4, pos4, batch4, x3, pos3, batch3)
+        x = self.fp3(x, pos3, batch3, x2, pos2, batch2)
+        x = self.fp2(x, pos2, batch2, x1, pos1, batch1)
+        x = self.fp1(
+            x, pos1, batch1, x, pos, batch
+        )  # Ritorna alla risoluzione originale
 
-        # SA2 Layer
-        idx_sa2 = fps(
-            pos_sa1, batch_sa1, ratio=0.25
-        )  # Downsample to 25% of the previous set
-        x_sa2, pos_sa2, batch_sa2 = self.sa2_module(
-            (x_sa1, None),
-            (pos_sa1, pos_sa1[idx_sa2]),
-            batch=(batch_sa1, batch_sa1[idx_sa2]),
-        )
-
-        # --- DECODER ---
-
-        # FP2: Upsample from SA2 to SA1 resolution.
-        # Interpolate SA2 features to SA1's point locations.
-        x_interp2 = knn_interpolate(x_sa2, pos_sa2, pos_sa1, batch_sa2, batch_sa1, k=3)
-        # Combine with SA1's original features (skip connection).
-        x_fp2 = self.fp2_module(torch.cat([x_interp2, x_sa1], dim=1))
-
-        # FP1: Upsample from SA1 to original resolution.
-        # Interpolate FP2 features to the original point locations.
-        x_interp1 = knn_interpolate(x_fp2, pos_sa1, pos, batch_sa1, batch, k=3)
-        # Combine with the very first features (skip connection).
-        x_fp1 = self.fp1_module(torch.cat([x_interp1, initial_features], dim=1))
-
-        # --- HEADS ---
-        # Now we have a feature vector for EVERY original point.
-        semantic = self.semantic_head(x_fp1)
-        embeddings = self.instance_head(x_fp1)
-
-        return semantic, embeddings
+        return self.semantic_head(x), self.instance_head(x)
 
 
-class FeaturePropagation(torch.nn.Module):
-    def __init__(self, in_channels, out_channels):
+class FPModule(torch.nn.Module):
+    def __init__(self, nn):
         super().__init__()
-        self.mlp = torch.nn.Sequential(
-            Linear(in_channels, out_channels),
-            ReLU(),
-            Linear(out_channels, out_channels),
-        )
+        self.nn = nn
 
-    def forward(self, x, pos):
-        x_skip, x = x
-        pos_skip, pos = pos
-
-        # Interpolate features using inverse distance weighting
-        dist = torch.cdist(pos, pos_skip)
-        k = 3
-        knn_indices = dist.topk(k, dim=1, largest=False).indices
-        knn_weights = 1.0 / (dist.gather(1, knn_indices) + 1e-8)
-        knn_weights /= knn_weights.sum(dim=1, keepdim=True)
-
-        x_interpolated = (x_skip[knn_indices] * knn_weights.unsqueeze(-1)).sum(dim=1)
-        x_combined = torch.cat([x, x_interpolated], dim=-1)
-        return self.mlp(x_combined)
+    def forward(self, x, pos, batch, x_skip, pos_skip, batch_skip):
+        # Interpola i punti dal livello meno denso a quello più denso
+        x = knn_interpolate(x, pos, pos_skip, batch, batch_skip, k=3)
+        if x_skip is not None:
+            x = torch.cat([x, x_skip], dim=1)
+        x = self.nn(x)
+        return x
 
 
 # --- Dataset Class ---
@@ -285,47 +255,85 @@ class SurfaceDataset(Dataset):
             return Data()
 
 
-def discriminative_loss(embeddings, instance_labels, delta_var=0.5, delta_dist=1.5):
-    unique_instances = torch.unique(instance_labels)
-    if len(unique_instances) == 0:
-        return torch.tensor(0.0, device=embeddings.device)
+def discriminative_loss(
+    embeddings, instance_labels, batch_index, delta_var=0.5, delta_dist=1.5
+):
+    total_loss = 0.0
+    num_graphs = batch_index.max().item() + 1
+    valid_graphs = 0
 
-    loss_var = 0.0
-    loss_dist = 0.0
-    loss_reg = 0.0
+    # Calcoliamo la loss separatamente per ogni nuvola di punti nel batch
+    for b in range(num_graphs):
+        # Estrai solo i punti di QUESTA specifica nuvola
+        mask = batch_index == b
+        emb_b = embeddings[mask]
+        inst_b = instance_labels[mask]
 
-    for instance in unique_instances:
-        mask = instance_labels == instance
-        emb_instance = embeddings[mask]
-        if emb_instance.shape[0] == 0:
+        unique_instances = torch.unique(inst_b)
+        num_instances = len(unique_instances)
+
+        if num_instances == 0:
             continue
-        mean_emb = emb_instance.mean(dim=0)
-        # Variance term (pull points to mean)
-        loss_var += torch.mean(
-            torch.clamp(torch.norm(emb_instance - mean_emb, dim=1) - delta_var, min=0)
-            ** 2
-        )
-        # Regularization term
-        loss_reg += torch.mean(torch.norm(mean_emb, dim=0))
 
-    # Distance term (push clusters apart)
-    num_instances = len(unique_instances)
+        valid_graphs += 1
 
-    if num_instances > 1:
-        means = torch.stack(
-            [embeddings[instance_labels == i].mean(dim=0) for i in unique_instances]
-        )
-        # Calcola la matrice delle distanze tutte in una volta sulla GPU
-        dist_matrix = torch.cdist(means, means)
-        # Prendi solo il triangolo superiore (escludendo la diagonale)
-        mask = torch.triu(torch.ones_like(dist_matrix), diagonal=1).bool()
-        distances = dist_matrix[mask]
-        loss_dist = torch.mean(torch.clamp(2 * delta_dist - distances, min=0) ** 2)
+        means = torch.stack([emb_b[inst_b == i].mean(dim=0) for i in unique_instances])
 
-    # Add epsilon to prevent division by zeroc
-    return (loss_var + 0.1 * loss_dist + 0.001 * loss_reg) / (
-        len(unique_instances) + 1e-8
-    )
+        # 1. VARIANCE LOSS
+        loss_var = 0.0
+        for i, instance in enumerate(unique_instances):
+            emb_instance = emb_b[inst_b == instance]
+            dist_to_mean = torch.norm(emb_instance - means[i], dim=1)
+            loss_var += torch.mean(torch.clamp(dist_to_mean - delta_var, min=0) ** 2)
+        loss_var /= num_instances
+
+        # 2. DISTANCE LOSS
+        loss_dist = 0.0
+        if num_instances > 1:
+            dist_matrix = torch.cdist(means, means)
+            mask_triu = torch.triu(torch.ones_like(dist_matrix), diagonal=1).bool()
+            distances = dist_matrix[mask_triu]
+            loss_dist = torch.mean(torch.clamp(2 * delta_dist - distances, min=0) ** 2)
+
+        # 3. REGOLARIZZAZIONE
+        loss_reg = torch.mean(torch.norm(means, dim=1))
+
+        # Sommiamo la loss di questa nuvola al totale del batch
+        total_loss += loss_var + 0.1 * loss_dist + 0.001 * loss_reg
+
+    if valid_graphs == 0:
+        return torch.tensor(0.0, device=embeddings.device, requires_grad=True)
+
+    return total_loss / valid_graphs
+
+
+# -------------------------------------
+#   TRAINING
+# -------------------------------------
+import numpy as np
+from torch.optim.lr_scheduler import StepLR
+import math
+
+
+# --- METRICS FUNCTIONS ---
+def compute_accuracy(pred, target):
+    pred_classes = pred.argmax(dim=1)
+    correct = (pred_classes == target).sum().item()
+    return correct / target.shape[0]
+
+
+def compute_miou(pred, target, num_classes):
+    pred_classes = pred.argmax(dim=1)
+    ious = []
+    for cls in range(num_classes):
+        pred_inds = pred_classes == cls
+        target_inds = target == cls
+        intersection = (pred_inds & target_inds).sum().item()
+        union = (pred_inds | target_inds).sum().item()
+        if union == 0:
+            continue  # Ignora le classi non presenti nel batch
+        ious.append(float(intersection) / float(max(union, 1)))
+    return sum(ious) / len(ious) if ious else 0.0
 
 
 # --- Define Paths ---
@@ -343,7 +351,6 @@ training_dataset_dir = PROCESSED_DATA_DIR  # Use the same variable
 # print("--- Preprocessing Done ---")
 
 # --- Now Initialize Dataset and DataLoader ---
-import torch_geometric.transforms as T
 
 print(f"Initializing dataset from: {training_dataset_dir}")
 
@@ -360,11 +367,31 @@ if len(dataset) == 0:
     raise ValueError(
         f"Dataset is empty! No '.pt' files found in {training_dataset_dir}. Check preprocessing output and paths."
     )
-
 print(f"Dataset loaded with {len(dataset)} samples.")
-train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-model = PointNetPlusPlus(num_semantic_classes=7, embed_dim=64)
+
+# --- SPLIT TRAIN/VAL (Modo nativo PyG) ---
+dataset_size = len(dataset)
+
+# Crea un array di indici mescolati casualmente (da 0 a dataset_size - 1)
+indices = torch.randperm(dataset_size).tolist()
+# ho provato con random_split di torch e si lamentava del tipo di dato, quindi oh well faremo cosi'
+
+train_size = int(0.8 * dataset_size)
+
+# Suddividi gli indici
+train_indices = indices[:train_size]
+val_indices = indices[train_size:]
+
+# Creiamo i subset e diciamo a Pyright di trattarli esplicitamente come Dataset
+# i know this is some jank-ass shit, its just to make pyright shut the hell up
+train_dataset = cast(Dataset, dataset[train_indices])
+val_dataset = cast(Dataset, dataset[val_indices])
+
+train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+
+model = PointNetPlusPlus(num_semantic_classes=8, embed_dim=64)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
 # Spostamento del training su GPU se disponibile
@@ -372,31 +399,65 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Training on: {device}")
 model = model.to(device)
 
-for epoch in range(100):
+# SCHEDULER (Dimezza il Learning Rate ogni 20 epoche)
+scheduler = StepLR(optimizer, step_size=20, gamma=0.5)
+
+# --- TRAINING LOOP --
+num_epochs = 100
+num_classes = 8
+
+for epoch in range(num_epochs):
+    # FASE DI TRAINING
+    model.train()
+    train_loss, train_acc, train_miou = 0, 0, 0
+
     for batch in train_loader:
+        batch = batch.to(device)
         optimizer.zero_grad()
-        # Forward pass
-        semantic_pred, embeddings = model(batch.x, batch.pos, batch.batch)
-        # Losses
-        loss_sem = F.cross_entropy(semantic_pred, batch.y_semantic)
-        loss_inst = discriminative_loss(embeddings, batch.y_instance)
+
+        sem_pred, inst_embeddings = model(batch.x, batch.pos, batch.batch)
+
+        loss_sem = F.cross_entropy(sem_pred, batch.y_semantic)
+        loss_inst = discriminative_loss(inst_embeddings, batch.y_instance, batch.batch)
         total_loss = loss_sem + loss_inst
-        # Backward pass
+
         total_loss.backward()
         optimizer.step()
 
-        # saving the epoch periodically to avoid overfitting
-        if (epoch + 1) % SAVE_EVERY == 0:
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "loss": total_loss / len(train_loader),
-                },
-                os.path.join(CHECKPOINT_DIR, f"model_epoch_{epoch + 1}.pth"),
-            )
+        train_loss += total_loss.item()
+        train_acc += compute_accuracy(sem_pred, batch.y_semantic)
+        train_miou += compute_miou(sem_pred, batch.y_semantic, num_classes)
 
+    scheduler.step()  # Aggiorna il learning rate alla fine dell'epoca
+
+    # FASE DI VALIDATION
+    model.eval()
+    val_loss, val_acc, val_miou = 0, 0, 0
+    with torch.no_grad():
+        for batch in val_loader:
+            batch = batch.to(device)
+            sem_pred, inst_embeddings = model(batch.x, batch.pos, batch.batch)
+
+            loss_sem = F.cross_entropy(sem_pred, batch.y_semantic)
+            loss_inst = discriminative_loss(
+                inst_embeddings, batch.y_instance, batch.batch
+            )
+            val_loss += (loss_sem + loss_inst).item()
+            val_acc += compute_accuracy(sem_pred, batch.y_semantic)
+            val_miou += compute_miou(sem_pred, batch.y_semantic, num_classes)
+
+    # STAMPA RISULTATI
+    print(f"Epoch {epoch + 1}/{num_epochs} [LR: {scheduler.get_last_lr()[0]:.5f}]")
+    print(
+        f"TRAIN | Loss: {train_loss / len(train_loader):.4f} | Acc: {train_acc / len(train_loader):.4f} | mIoU: {train_miou / len(train_loader):.4f}"
+    )
+    print(
+        f"VAL   | Loss: {val_loss / len(val_loader):.4f} | Acc: {val_acc / len(val_loader):.4f} | mIoU: {val_miou / len(val_loader):.4f}"
+    )
+    print("-" * 50)
+
+    # Salva il best model
+    # (Inserisci qui la logica di salvataggio checkpoint come nel tuo codice originale)
 # Save model checkpoint
 torch.save(
     {
@@ -418,6 +479,7 @@ print(f"\nStarting inference on: {test_pointcloud_path}")
 
 # Load the test data
 test_data = parse_txt_to_data(test_pointcloud_path)
+
 if (
     test_data is None
     or not hasattr(test_data, "pos")
@@ -426,67 +488,47 @@ if (
 ):
     print("Could not load or parse test data, skipping inference.")
 else:
-    test_loader = DataLoader(
-        [test_data], batch_size=1
-    )  # Batch size 1 for single file inference
+    # IMPORTANTE: Salva le coordinate originali prima di normalizzarle
+    # così quando salvi il .ply alla fine sarà nella scala/posizione reale!
+    original_pos_np = test_data.pos.clone().numpy()
 
-    # Load the trained model weights (if not already loaded)
-    # Example: If running inference separately from training
-    # checkpoint = torch.load('model_checkpoint.pth')
-    # model.load_state_dict(checkpoint['model_state_dict'])
-    # print("Loaded trained model weights.")
+    # IMPORTANTE: Applica la stessa trasformazione usata nel training!
+    test_data = transform(test_data)
 
-    model.eval()  # Set model to evaluation mode (disables dropout, etc.)
+    test_loader = DataLoader([test_data], batch_size=1)
 
-    with torch.no_grad():  # Disable gradient calculations for inference
-        for batch in test_loader:  # Will loop only once for batch_size=1
+    model.eval()
+    model = model.to(device)  # Sposta il modello su GPU
+
+    with torch.no_grad():
+        for batch in test_loader:
             print(f"Processing point cloud with {batch.num_points} points...")
-            # Ensure data is on the same device as the model (if using GPU)
-            # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            # model.to(device)
-            # batch = batch.to(device)
+            batch = batch.to(device)  # Sposta i dati su GPU
 
             # --- Model Prediction ---
             semantic_logits, embeddings = model(batch.x, batch.pos, batch.batch)
 
-            # Get semantic predictions
-            semantic_pred = semantic_logits.argmax(dim=1)  # Shape: (N,)
+            semantic_pred = semantic_logits.argmax(dim=1)
 
             # --- Instance Segmentation using Clustering ---
             print("Performing clustering on embeddings...")
-            # Move embeddings to CPU and convert to NumPy for scikit-learn
             embeddings_np = embeddings.cpu().numpy()
 
-            # Apply DBSCAN clustering
-            # ** IMPORTANT: Tune DBSCAN parameters (eps, min_samples) **
-            # These values heavily depend on your embedding space and data.
-            # Good values require experimentation. Start with these and adjust.
             dbscan = DBSCAN(eps=0.5, min_samples=10)
-            instance_pred = dbscan.fit_predict(embeddings_np)  # Shape: (N,)
-            # instance_pred contains cluster labels (0, 1, 2, ...)
-            # Points deemed noise by DBSCAN get label -1.
+            instance_pred = dbscan.fit_predict(embeddings_np)
 
             print(
                 f"Clustering found {len(np.unique(instance_pred[instance_pred >= 0]))} instances (excluding noise)."
             )
 
             # --- Visualization Preparation ---
-            # Get positions as NumPy array
-            pos_np = batch.pos.cpu().numpy()  # Shape: (N, 3)
-
-            # Map instance IDs (cluster labels) to colors
             unique_instance_ids = np.unique(instance_pred)
-            num_instances = len(
-                unique_instance_ids[unique_instance_ids >= 0]
-            )  # Count non-noise instances
+            num_instances = len(unique_instance_ids[unique_instance_ids >= 0])
 
-            # Generate distinct colors using a colormap (e.g., 'viridis', 'tab20')
-            # Using tab20 provides up to 20 distinct colors
             if num_instances > 0:
-                # Generate N distinct colors + 1 for noise
                 colors = plt.get_cmap("tab20", num_instances)
                 instance_colors_map = {
-                    inst_id: colors(i)[:3]  # Get RGB tuple (0-1 range)
+                    inst_id: colors(i)[:3]
                     for i, inst_id in enumerate(
                         unique_instance_ids[unique_instance_ids >= 0]
                     )
@@ -494,21 +536,21 @@ else:
             else:
                 instance_colors_map = {}
 
-            # Assign a default color (e.g., gray) for noise points (-1)
-            instance_colors_map[-1] = (0.5, 0.5, 0.5)  # Gray
+            instance_colors_map[-1] = (0.5, 0.5, 0.5)
 
-            # Create color array for the point cloud
             point_colors_np = np.array(
                 [instance_colors_map[inst_id] for inst_id in instance_pred]
-            )  # Shape: (N, 3)
+            )
 
-            # --- Save the colored point cloud as PLY ---
+            # --- Save the colored point cloud come PLY ---
             print(f"Saving instance-colored point cloud to {output_ply_path}...")
             try:
                 with open(output_ply_path, "w") as f:
                     f.write("ply\n")
                     f.write("format ascii 1.0\n")
-                    f.write(f"element vertex {len(pos_np)}\n")
+                    f.write(
+                        f"element vertex {len(original_pos_np)}\n"
+                    )  # Usiamo original_pos_np!
                     f.write("property float x\n")
                     f.write("property float y\n")
                     f.write("property float z\n")
@@ -516,11 +558,11 @@ else:
                     f.write("property uchar green\n")
                     f.write("property uchar blue\n")
                     f.write("end_header\n")
-                    for i in range(len(pos_np)):
-                        # Scale colors from 0-1 range to 0-255 integer range
+                    for i in range(len(original_pos_np)):
                         r, g, b = (point_colors_np[i] * 255).astype(np.uint8)
+                        # Salviamo con le coordinate REALI, non quelle normalizzate
                         f.write(
-                            f"{pos_np[i, 0]:.6f} {pos_np[i, 1]:.6f} {pos_np[i, 2]:.6f} {r} {g} {b}\n"
+                            f"{original_pos_np[i, 0]:.6f} {original_pos_np[i, 1]:.6f} {original_pos_np[i, 2]:.6f} {r} {g} {b}\n"
                         )
                 print(f"Successfully saved colored point cloud to {output_ply_path}")
             except Exception as e:
