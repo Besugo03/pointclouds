@@ -7,11 +7,20 @@ from torch_geometric.data import Data, Dataset
 from torch_geometric.loader import DataLoader
 import torch_geometric.transforms as T
 from typing import cast
-
+import argparse
 
 CHECKPOINT_DIR = "checkpoints"
 SAVE_EVERY = 5  # Save every 5 epochs
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+# Libreria problematica : torch-cluster (dependency per la funzione fps)
+# soluzioni:
+# 1. compilare da zero torch-cluster
+#
+# 2. fps (Furthest point sampling)
+#   - non e' detto che sia solo fps
+#
+# 3. scheda video server vecchia
 
 
 def parse_txt_to_data(txt_path):
@@ -246,7 +255,7 @@ class SurfaceDataset(Dataset):
 
     def get(self, idx):
         try:
-            data = torch.load(self.paths[idx])
+            data = torch.load(self.paths[idx], weights_only=False)
             return data
         except Exception as e:
             print(f"Error loading data file: {self.paths[idx]}")
@@ -337,18 +346,22 @@ def compute_miou(pred, target, num_classes):
 
 
 # --- Define Paths ---
-RAW_DATA_DIR = (
-    "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/training_dataset"
-)
+
+# qui specifico una cartella perche' mi sono scordato di fare il codice ricorsivo per crawlare la cartella.
+# TODO : da rendere crawler
+# TODO : Da firaxe anche il fatto che il preprocessing runna regardless che i dati esistano gia' o meno.
+RAW_DATA_DIR = "/home/besugo/Downloads/MODEL_param/extracted_model/MODEL_param/processed/Bolt_500_processed/"
+
 PROCESSED_DATA_DIR = (
-    "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/processed"
+    "/home/besugo/Downloads/MODEL_param/extracted_model/MODEL_param/pt_tensors/"
 )
+
 training_dataset_dir = PROCESSED_DATA_DIR  # Use the same variable
 
 # --- Run Preprocessing ---
-# print("--- Running Preprocessing ---")
-# dir_to_dataset(RAW_DATA_DIR, PROCESSED_DATA_DIR)
-# print("--- Preprocessing Done ---")
+print("--- Running Preprocessing ---")
+dir_to_dataset(RAW_DATA_DIR, PROCESSED_DATA_DIR)
+print("--- Preprocessing Done ---")
 
 # --- Now Initialize Dataset and DataLoader ---
 
@@ -456,8 +469,6 @@ for epoch in range(num_epochs):
     )
     print("-" * 50)
 
-    # Salva il best model
-    # (Inserisci qui la logica di salvataggio checkpoint come nel tuo codice originale)
 # Save model checkpoint
 torch.save(
     {
@@ -472,7 +483,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # pointcloud to test inference on
-test_pointcloud_path = "C:/Users/besugo/Downloads/MODEL_analog-20250329T150651Z-001/A_03.25.25_0050_pts.txt"
+test_pointcloud_path = "/home/besugo/Downloads/MODEL_param/extracted_model/MODEL_param/raw/Random_1000/P_05.16.25_0001_norm.txt"
 output_ply_path = "output_instance_segmented.ply"
 
 print(f"\nStarting inference on: {test_pointcloud_path}")
@@ -488,8 +499,8 @@ if (
 ):
     print("Could not load or parse test data, skipping inference.")
 else:
-    # IMPORTANTE: Salva le coordinate originali prima di normalizzarle
-    # così quando salvi il .ply alla fine sarà nella scala/posizione reale!
+    # IMPORTANTE: Salvataggio delle coordinate originali prima di normalizzarle
+    # così quando salva il .ply alla fine sarà nella scala/posizione reale
     original_pos_np = test_data.pos.clone().numpy()
 
     # IMPORTANTE: Applica la stessa trasformazione usata nel training!

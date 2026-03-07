@@ -1,1 +1,5 @@
 venv/
+/Miniconda3-latest-Linux-x86_64.sh
+/local_cuda
+/local_compiler
+/cuda-12.8
