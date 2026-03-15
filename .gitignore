@@ -3,3 +3,9 @@ venv/
 /local_cuda
 /local_compiler
 /cuda-12.8
+/debug_embeddings_space.ply
+/model_checkpoint.pth
+/model_checkpoint.pth
+/output_instance_segmented.ply
+/output_instance_segmented.ply
+/P_04.10.25_0002_pts_processed_segmented.ply

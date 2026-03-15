@@ -30,3 +30,14 @@ In che modo il metodo "by skip" distrugge l'uniformita' dei punti? da quello che
 - vettorizzazione dei calcoli per la discriminative loss
 - confermato che gli id sono UNICI per ogni superficie, indipendentemente dalle ripetizioni.
 - cleaned up some imports
+
+Epoch 054 | TR: L=0.124 A=0.981 | VL: L=0.125 A=0.981
+Epoch 055 | TR: L=0.124 A=0.981 | VL: L=0.123 A=0.981
+Epoch 056 | TR: L=0.124 A=0.981 | VL: L=0.124 A=0.981
+Epoch 057 | TR: L=0.121 A=0.981 | VL: L=0.123 A=0.981
+Epoch 058 | TR: L=0.124 A=0.981 | VL: L=0.127 A=0.980
+Epoch 059 | TR: L=0.122 A=0.981 | VL: L=0.121 A=0.981
+Epoch 060 | TR: L=0.121 A=0.981 | VL: L=0.119 A=0.982
+Epoch 061 | TR: L=0.118 A=0.982 | VL: L=0.118 A=0.982
+Epoch 062 | TR: L=0.118 A=0.982 | VL: L=0.117 A=0.982
+Epoch 063 | TR: L=0.118 A=0.982 | VL: L=0.117 A=0.982
